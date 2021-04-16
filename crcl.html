@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+	<title>Creatinine Clearance</title>
+	<script src="https://code.jquery.com/jquery-3.4.1.slim.min.js"></script>
+
+<script type="text/javascript">
+function clearfields(){
+	$('input[type="number"]').each(function(){
+		$(this).val("");
+	})
+}
+function calculatecrcl(age, weight, scr, gender){
+	var crcl=1.23 * (140-age) * weight /scr;
+	if (gender=="F"){
+		crcl=crcl*0.85;
+	}
+	return crcl;
+}
+
+function calculate(){
+	event.preventDefault();
+	var acbw=parseFloat($("#acbw").val());
+	var ft=parseFloat($("#ft").val());
+	var inch=parseFloat($("#inch").val());
+	console.log(inch);
+	var totalin = ft * 12 + inch;
+	var gender=$('input[name="gender"]:checked').val();
+	console.log(gender);
+	if (gender==undefined){
+		alert("Select Male/Female");
+		return false;
+	}
+	var IBW=0;
+	//calculate IBW
+	if (gender=="M"){
+		if (totalin>60){
+			IBW=(totalin-60)*2.3 + 50;
+		}else{
+			IBW=50;
+		}
+	}
+	if (gender=="F"){
+		if (totalin>60){
+			IBW=(totalin-60)*2.3 + 45.5;
+		}else{
+			IBW=45.5;
+		}
+	}
+	//calculate ABW if needed
+	var ABW=0;
+	if (acbw>IBW){
+		ABW=0.4*(acbw-IBW) + IBW;
+	}else{
+		ABW=acbw;
+	}
+	
+	var difference=((acbw-IBW)/IBW) *100;
+	var age=parseFloat($("#age").val());
+
+	//adjusted ScR
+	var Scr=parseFloat($("#Scr").val());
+	var adjScr=Scr * 1.065 + 5.92;
+
+
+
+	//console.clear();
+	console.log("IBW: "+IBW);
+	console.log("ABW: "+ABW);
+	console.log("difference: "+difference);
+	console.log("Adjusted:" + adjScr);
+	
+
+
+	//Calculate Scr with Actual BW
+	var crclactual=calculatecrcl(age, acbw, adjScr, gender);
+	var crclabw=calculatecrcl(age, ABW, adjScr, gender);
+	$("#adjScrval").html(adjScr.toFixed(2));
+	$("#IBWval").html(IBW.toFixed(2));
+	$("#acbwval").html(acbw.toFixed(2));
+	$("#differenceval").html(difference.toFixed(2));
+	$("#ABWval").html(ABW.toFixed(2));
+	$("#crclactualval").html(crclactual.toFixed(2));
+	$("#crclabwval").html(crclabw.toFixed(2));
+	$("#crclabwval").removeClass();
+	$("#crclactualval").removeClass();
+	if (difference>=30){
+		$("#crclabwval").addClass("text-primary");
+	}else{
+		$("#crclactualval").addClass("text-primary");
+	}
+	console.log(crclactual);
+	//calculate both based on IBW and ABW
+	
+	return false;
+}
+//<input  type="text" id=""/>
+//:<span id=""></span><br/>
+</script>
+
+
+    <!-- Bootstrap -->
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+	<style>
+		input{
+			margin-bottom:5px;
+		}
+		input[type=number]{
+			width: 80px;
+		}
+	</style>
+    <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
+    <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
+    <!--[if lt IE 9]>
+      <script src="https://oss.maxcdn.com/html5shiv/3.7.3/html5shiv.min.js"></script>
+      <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script>
+    <![endif]-->
+  </head>
+  <body>
+    <div class="container">
+		<form onsubmit="calculate();">
+			<h3>Patient info</h3>
+		<input type="radio" name="gender" id="gender_M" value="M"><label for="gender_M">Male</label><br/>
+		<input type="radio" name="gender" id="gender_F" value="F"><label for="gender_F">Female</label><br/>
+		Age: <input type="number" id="age" size="4" autocomplete="off"><br/>
+		SCr (Lab reported): <input type="number" id="Scr" size="7" autocomplete="off"/>umol/L<br/>
+		Actual Weight: <input  type="number" id="acbw" size="4" step="0.01" autocomplete="off"/>kg<br/>
+		Height: <input  type="number" id="ft"size="2" autocomplete="off"/> ft <input  type="number" id="inch" size="2" autocomplete="off"/> in<br/>
+		<input class="btn btn-primary" type="submit" value="Calculate" />
+		
+		<a href="#" class="btn btn-danger" onclick="clearfields();">Clear</a>
+		</form>
+		<hr>
+		Using following data:<br/>
+		SCr (Adjusted): <span id="adjScrval"></span><br/>
+		Ideal Body Weight: <span id="IBWval"></span><br/>
+		Actual Body Weight: <span id="acbwval"></span><br/>
+		Difference between Actual and Ideal Body Weight: <span id="differenceval"></span>%<br/>
+		Adjusted Body Weight: <span id="ABWval"></span><br/>
+		
+		<hr>
+		<h3>Creatinine Clearance (Actual body weight): <span id="crclactualval"></span><br/></h3>
+		<h3>Creatinine Clearance (Adjusted body weight): <span id="crclabwval"></span></h3>
+		
+		</div>
+
+    <!-- jQuery (necessary for Bootstrap's JavaScript plugins) -->
+    <script src="https://code.jquery.com/jquery-1.12.4.min.js" integrity="sha384-nvAa0+6Qg9clwYCGGPpDQLVpLNn0fRaROjHqs13t4Ggj3Ez50XnGQqc/r8MhnRDZ" crossorigin="anonymous"></script>
+    <!-- Include all compiled plugins (below), or include individual files as needed -->
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js" integrity="sha384-aJ21OjlMXNL5UyIl/XNwTMqvzeRMZH2w8c5cRVpzpU8Y5bApTppSuUkhZXN0VxHd" crossorigin="anonymous"></script>
+  </body>
+</html>
+
