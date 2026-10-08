@@ -156,13 +156,18 @@ const Core = (() => {
     const { cells, merges } = sheet;
     const get = (r, c) => cells.get(`${r},${c}`);
     let maxR = 0, maxC = 0; for (const k of cells.keys()) { const [r, c] = k.split(',').map(Number); maxR = Math.max(maxR, r); maxC = Math.max(maxC, c); }
-    const dateRe = /^(\d\d)\/(\d\d)\s*\/(\d{4})$/;
-    const parseDate = s => { const m = s.replace(/\s+/g, '').match(/^(\d\d)\/(\d\d)\/(\d{4})$/); return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null; };
+    const parseDate = raw => {
+      if (raw == null) return null; const s = String(raw).replace(/\s+/g, '');
+      let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); if (m) return new Date(+m[3], +m[1] - 1, +m[2]);
+      m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+      if (/^\d{5}(\.\d+)?$/.test(s) && +s > 30000 && +s < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(+s) * 864e5); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
+      return null;
+    };
     const dateKey = d => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 
     // find blocks
     const blocks = [];
-    for (let r = 1; r <= maxR; r++) if (get(r, 1) === 'Employee') {
+    for (let r = 1; r <= maxR; r++) if ((get(r, 1) || '').trim().toLowerCase() === 'employee') {
       let title = ''; for (let t = r - 1; t >= Math.max(1, r - 3); t--) if ((get(t, 1) || '').includes('Location')) { title = get(t, 1); break; }
       blocks.push({ hdr: r, title });
     }
@@ -170,26 +175,33 @@ const Core = (() => {
 
     const dates = [], seen = new Set(), data = {}; SECTIONS.forEach(s => data[s] = {});
     const reg = new Set(cfg.registered.map(s => s.toLowerCase()));
-    const notes = [];
+    const skipped = [];
     blocks.forEach((b, bi) => {
-      const dr = b.hdr + 1, end = bi + 1 < blocks.length ? blocks[bi + 1].hdr - 1 : maxR;
+      // the date row is whichever of the next rows holds the most parsable dates
+      let dr = b.hdr + 1, best = -1;
+      for (let t = b.hdr; t <= b.hdr + 3; t++) { let n = 0; for (let c = 2; c <= maxC; c++) if (parseDate(get(t, c))) n++; if (n > best) { best = n; dr = t; } }
+      if (best < 1) throw new Error('Found the Employee header but no dates under it.');
+      const end = bi + 1 < blocks.length ? blocks[bi + 1].hdr - 1 : maxR;
       const onco = /oncology/i.test(b.title);
       // column -> date via merged header cells
       const colDate = {};
       for (let c = 1; c <= maxC; c++) {
         let v = get(dr, c); if (!v) continue; const d = parseDate(v); if (!d) continue;
         const m = merges.find(m => m.r1 <= dr && dr <= m.r2 && m.c1 === c);
-        for (let k = c; k <= (m ? m.c2 : c); k++) colDate[k] = d;
+        let e = m ? m.c2 : c;
+        if (!m) { let n = c + 1; while (n <= maxC && !parseDate(get(dr, n))) n++; e = n - 1; }  // unmerged header: span to the next date
+        for (let k = c; k <= e; k++) colDate[k] = d;
         if (!seen.has(dateKey(d))) { seen.add(dateKey(d)); dates.push(d); }
       }
+      const firstDateCol = Math.min(...Object.keys(colDate).map(Number));
       for (let r = dr + 1; r <= end; r++) {
         if ((get(r, 1) || '').includes('Location')) break;
         const raw = get(r, 1), job = get(r, 6) || '';
-        if (raw === 'Employee') continue;
+        if ((raw || '').trim().toLowerCase() === 'employee') continue;
         let ln = '', fn = '';
         if (raw && raw.includes(',')) { [ln, fn] = raw.split(/,(.+)/).map(s => s.trim()); } else if (raw) { fn = raw; }
         for (let c = 2; c <= maxC; c++) {
-          let v = get(r, c); if (!v || !colDate[c]) continue; v = v.trim();
+          let v = get(r, c); if (!v) continue; v = v.trim(); if (!colDate[c]) { if (c > firstDateCol && !cfg.ignore.some(p => v.startsWith(p))) skipped.push(`${colName(c)}${r}: ${v}`); continue; }
           if (cfg.ignore.some(p => v.startsWith(p))) continue;
           const firstCell = v.split(' ')[0];
           let first = fn ? fn.split(' ')[0] : firstCell;
@@ -216,7 +228,7 @@ const Core = (() => {
     SECTIONS.forEach(s => {
       out[s] = dates.map(d => (data[s][dateKey(d)] || []).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : a.key2 < b.key2 ? -1 : a.key2 > b.key2 ? 1 : 0).map(x => x.label));
     });
-    return { dates, sections: out };
+    return { dates, sections: out, skipped };
   }
 
   /* ---------- write new sheet into the workbook ---------- */
@@ -332,7 +344,9 @@ async function handle(f){
     const {blob,result}=await Core.process(await f.arrayBuffer(),cfg());
     outBlob=blob;outName=f.name.replace(/\.xlsx$/i,'')+' - Clean.xlsx';
     const n=result.dates.length;
-    m.className='ok';m.textContent=`Done – ${n} days (${fmt(result.dates[0])} to ${fmt(result.dates[n-1])}). Review below, then download.`;
+    const f1=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    m.className='ok';m.textContent=`Done – ${n} days (${f1(result.dates[0])} to ${f1(result.dates[n-1])}). Review below, then download.`;
+    if(result.skipped.length){m.className='err';m.textContent+=` WARNING: ${result.skipped.length} schedule entries sat in columns with no date and were left out (e.g. ${result.skipped.slice(0,3).join('; ')}).`}
     render(result);$('actions').hidden=false;$('pcard').hidden=false;
   }catch(e){m.className='err';m.textContent=e.message||String(e);console.error(e)}
 }
