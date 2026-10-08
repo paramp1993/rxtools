@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pharmacist Schedule Cleaner</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2433;--mute:#667085;--line:#d9dde5;--accent:#1f3864;--accent2:#2f5aa8}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+main{max-width:1100px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}p.sub{color:var(--mute);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}
+#drop{border:2px dashed #9aa6bd;border-radius:10px;padding:34px 16px;text-align:center;cursor:pointer;background:#fbfcfe}
+#drop.over{background:#eaf1ff;border-color:var(--accent2)}#drop b{display:block;font-size:16px}#drop span{color:var(--mute);font-size:13px}
+button{font:inherit;background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;cursor:pointer}button:hover{background:var(--accent2)}
+button.alt{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+details summary{cursor:pointer;font-weight:600}
+label{display:block;font-size:13px;color:var(--mute);margin:12px 0 4px}
+textarea{width:100%;font:13px/1.4 ui-monospace,Menlo,Consolas,monospace;border:1px solid var(--line);border-radius:6px;padding:8px;min-height:64px}
+#msg{margin:12px 0 0;font-size:14px}.err{color:#b42318}.ok{color:#067647}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+#preview{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;font-size:12.5px;min-width:100%}
+th,td{border:1px solid #cfd4dd;padding:3px 8px;white-space:nowrap;vertical-align:top}
+thead th{position:sticky;background:#1f3864;color:#fff;text-align:center;z-index:2}
+thead tr:nth-child(1) th{top:0}thead tr:nth-child(2) th{top:24px}
+th.we{background:#7f7f7f}td:first-child,th:first-child{position:sticky;left:0;z-index:1}
+tr.sec td{font-weight:700}tr.tot td{font-style:italic;text-align:center}
+[hidden]{display:none!important}
+</style></head><body><main>
+<h1>Pharmacist Schedule Cleaner</h1>
+<p class="sub">Drop in the monthly <i>Location Schedule</i> .xlsx export. You get the same workbook back with a new <b>Clean Schedule</b> sheet. Everything runs in your browser – the file is never uploaded anywhere.</p>
+
+<div class="card">
+  <div id="drop" tabindex="0"><b>Drop the .xlsx here, or click to choose</b><span>e.g. Flowsheets_Oct_12_Nov_29.xlsx</span></div>
+  <input id="file" type="file" accept=".xlsx" hidden>
+  <div id="msg"></div>
+  <div class="row" id="actions" hidden><button id="dl">Download workbook</button><button class="alt" id="again">Choose another file</button></div>
+</div>
+
+<div class="card"><details><summary>Name settings</summary>
+  <label>Names that get “®” (one per line, first names)</label><textarea id="reg"></textarea>
+  <label>Renames (one per line, <code>Old = New</code>)</label><textarea id="ren"></textarea>
+  <label>Ignore cells starting with (one per line)</label><textarea id="ign" style="min-height:40px"></textarea>
+  <p style="color:#667085;font-size:13px;margin:8px 0 0">Changes apply the next time a file is processed.</p>
+</details></div>
+
+<div class="card" id="pcard" hidden><div id="preview"></div></div>
+</main>
+<script>
+/* Pharmacist schedule cleanup – core logic (no dependencies, runs in browser and Node) */
+const Core = (() => {
+  const enc = new TextEncoder(), dec = new TextDecoder();
+
+  /* ---------- zip ---------- */
+  async function inflateRaw(bytes) {
+    const ds = new DecompressionStream('deflate-raw');
+    const w = ds.writable.getWriter(); w.write(bytes); w.close();
+    return new Uint8Array(await new Response(ds.readable).arrayBuffer());
+  }
+  async function deflateRaw(bytes) {
+    const cs = new CompressionStream('deflate-raw');
+    const w = cs.writable.getWriter(); w.write(bytes); w.close();
+    return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  }
+  async function unzip(buf) {
+    const u8 = new Uint8Array(buf), dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let e = u8.length - 22;
+    while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+    if (e < 0) throw new Error('This does not look like an .xlsx file.');
+    const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true);
+    const files = new Map();
+    for (let i = 0; i < n; i++) {
+      const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+      const nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+      const lho = dv.getUint32(p + 42, true);
+      const name = dec.decode(u8.subarray(p + 46, p + 46 + nl));
+      const lnl = dv.getUint16(lho + 26, true), lxl = dv.getUint16(lho + 28, true);
+      const data = u8.subarray(lho + 30 + lnl + lxl, lho + 30 + lnl + lxl + csize);
+      files.set(name, method === 0 ? data.slice() : await inflateRaw(data));
+      p += 46 + nl + xl + cl;
+    }
+    return files;
+  }
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+  async function zip(files) {
+    const parts = [], central = []; let off = 0;
+    for (const [name, data] of files) {
+      const nb = enc.encode(name), crc = crc32(data);
+      const comp = await deflateRaw(data);
+      const useDef = comp.length < data.length;
+      const body = useDef ? comp : data, method = useDef ? 8 : 0;
+      const lh = new Uint8Array(30 + nb.length), d = new DataView(lh.buffer);
+      d.setUint32(0, 0x04034b50, true); d.setUint16(4, 20, true); d.setUint16(6, 0x0800, true); d.setUint16(8, method, true);
+      d.setUint16(10, 0, true); d.setUint16(12, 0x21, true); d.setUint32(14, crc, true); d.setUint32(18, body.length, true);
+      d.setUint32(22, data.length, true); d.setUint16(26, nb.length, true); lh.set(nb, 30);
+      const ch = new Uint8Array(46 + nb.length), c = new DataView(ch.buffer);
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, method, true);
+      c.setUint16(12, 0, true); c.setUint16(14, 0x21, true); c.setUint32(16, crc, true); c.setUint32(20, body.length, true);
+      c.setUint32(24, data.length, true); c.setUint16(28, nb.length, true); c.setUint32(42, off, true); ch.set(nb, 46);
+      parts.push(lh, body); central.push(ch); off += lh.length + body.length;
+    }
+    const csize = central.reduce((a, b) => a + b.length, 0);
+    const end = new Uint8Array(22), ed = new DataView(end.buffer);
+    ed.setUint32(0, 0x06054b50, true); ed.setUint16(8, central.length, true); ed.setUint16(10, central.length, true);
+    ed.setUint32(12, csize, true); ed.setUint32(16, off, true);
+    return new Blob([...parts, ...central, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  /* ---------- xml helpers ---------- */
+  const unesc = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16))).replace(/&amp;/g, '&');
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const colNum = s => { let n = 0; for (const ch of s) n = n * 26 + ch.charCodeAt(0) - 64; return n; };
+  const colName = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = ((n - 1) / 26) | 0; } return s; };
+  const text = x => dec.decode(x);
+
+  function readSheet(files, shared) {
+    const wbx = text(files.get('xl/workbook.xml'));
+    const rels = text(files.get('xl/_rels/workbook.xml.rels'));
+    const sh = wbx.match(/<sheet\b[^>]*>/);
+    if (!sh) throw new Error('No sheets found.');
+    const rid = sh[0].match(/r:id="([^"]+)"/)[1];
+    const rel = [...rels.matchAll(/<Relationship\b[^>]*>/g)].map(m => m[0]).find(t => t.includes(`Id="${rid}"`));
+    let target = rel.match(/Target="([^"]+)"/)[1];
+    target = target.startsWith('/') ? target.slice(1) : 'xl/' + target;
+    const xml = text(files.get(target));
+    const cells = new Map(); // "r,c" -> string
+    for (const m of xml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const attrs = m[1], inner = m[2]; if (!inner) continue;
+      const ref = attrs.match(/\br="([A-Z]+)(\d+)"/); const t = (attrs.match(/\bt="([^"]+)"/) || [])[1];
+      let v = null;
+      if (t === 's') { const x = inner.match(/<v>(\d+)<\/v>/); if (x) v = shared[+x[1]]; }
+      else if (t === 'inlineStr') v = [...inner.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(x => unesc(x[1])).join('');
+      else { const x = inner.match(/<v>([\s\S]*?)<\/v>/); if (x) v = unesc(x[1]); }
+      if (v !== null && v !== '') cells.set(`${ref[2]},${colNum(ref[1])}`, v);
+    }
+    const merges = [...xml.matchAll(/<mergeCell\b[^>]*ref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/g)]
+      .map(m => ({ c1: colNum(m[1]), r1: +m[2], c2: colNum(m[3]), r2: +m[4] }));
+    return { cells, merges, target };
+  }
+  function readShared(files) {
+    const f = files.get('xl/sharedStrings.xml'); if (!f) return [];
+    return [...text(f).matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)]
+      .map(m => [...m[1].matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map(x => unesc(x[1])).join(''));
+  }
+
+  /* ---------- schedule logic ---------- */
+  const DEFAULTS = {
+    registered: ['Zuhaib', 'Sanket', 'Safa', 'Param', 'Shirley', 'Michelle', 'Liat', 'Krista', 'Gemma', 'Namra', 'Negar', 'Vianna', 'Ara', 'Sakina', 'Louis', 'Seung Hee'],
+    renames: { 'Maria': 'Grace', 'Seung': 'Seung Hee' },
+    ignore: ['PT TO Request'],
+  };
+  const SECTIONS = ['Day Shift', 'Lead', 'Evening (1600-0000)', 'ASP (Antibiotic Stewardship)', 'Overnight (0000-0800)', 'Unsure / Needs Review'];
+
+  function build(sheet, cfg) {
+    cfg = Object.assign({}, DEFAULTS, cfg || {});
+    const { cells, merges } = sheet;
+    const get = (r, c) => cells.get(`${r},${c}`);
+    let maxR = 0, maxC = 0; for (const k of cells.keys()) { const [r, c] = k.split(',').map(Number); maxR = Math.max(maxR, r); maxC = Math.max(maxC, c); }
+    const dateRe = /^(\d\d)\/(\d\d)\s*\/(\d{4})$/;
+    const parseDate = s => { const m = s.replace(/\s+/g, '').match(/^(\d\d)\/(\d\d)\/(\d{4})$/); return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null; };
+    const dateKey = d => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+
+    // find blocks
+    const blocks = [];
+    for (let r = 1; r <= maxR; r++) if (get(r, 1) === 'Employee') {
+      let title = ''; for (let t = r - 1; t >= Math.max(1, r - 3); t--) if ((get(t, 1) || '').includes('Location')) { title = get(t, 1); break; }
+      blocks.push({ hdr: r, title });
+    }
+    if (!blocks.length) throw new Error('Could not find an "Employee" header row. Is this the Location Schedule export?');
+
+    const dates = [], seen = new Set(), data = {}; SECTIONS.forEach(s => data[s] = {});
+    const reg = new Set(cfg.registered.map(s => s.toLowerCase()));
+    const notes = [];
+    blocks.forEach((b, bi) => {
+      const dr = b.hdr + 1, end = bi + 1 < blocks.length ? blocks[bi + 1].hdr - 1 : maxR;
+      const onco = /oncology/i.test(b.title);
+      // column -> date via merged header cells
+      const colDate = {};
+      for (let c = 1; c <= maxC; c++) {
+        let v = get(dr, c); if (!v) continue; const d = parseDate(v); if (!d) continue;
+        const m = merges.find(m => m.r1 <= dr && dr <= m.r2 && m.c1 === c);
+        for (let k = c; k <= (m ? m.c2 : c); k++) colDate[k] = d;
+        if (!seen.has(dateKey(d))) { seen.add(dateKey(d)); dates.push(d); }
+      }
+      for (let r = dr + 1; r <= end; r++) {
+        if ((get(r, 1) || '').includes('Location')) break;
+        const raw = get(r, 1), job = get(r, 6) || '';
+        if (raw === 'Employee') continue;
+        let ln = '', fn = '';
+        if (raw && raw.includes(',')) { [ln, fn] = raw.split(/,(.+)/).map(s => s.trim()); } else if (raw) { fn = raw; }
+        for (let c = 2; c <= maxC; c++) {
+          let v = get(r, c); if (!v || !colDate[c]) continue; v = v.trim();
+          if (cfg.ignore.some(p => v.startsWith(p))) continue;
+          const firstCell = v.split(' ')[0];
+          let first = fn ? fn.split(' ')[0] : firstCell;
+          if (!fn) { ln = v.toLowerCase(); }
+          let rest = v.startsWith(first) ? v.slice(first.length).trim() : v;
+          first = cfg.renames[first] || first;
+          if (reg.has(first.toLowerCase())) first += ' ®';
+          let sec, label;
+          if (onco) { sec = 'Unsure / Needs Review'; label = `${first} – ${v}`; }
+          else if (rest === '' && /practice lead/i.test(job)) { sec = 'Lead'; label = first; }
+          else if (rest === '') { sec = 'Day Shift'; label = first; }
+          else if (rest === '1600-0000') { sec = 'Evening (1600-0000)'; label = first; }
+          else if (/^overnight\s+0000-0800$/i.test(rest)) { sec = 'Overnight (0000-0800)'; label = first; }
+          else if (/^ASP\d*$/i.test(rest)) { sec = 'ASP (Antibiotic Stewardship)'; label = first; }
+          else if (/^\d{4}-\d{4}$/.test(rest)) { sec = 'Evening (1600-0000)'; label = `${first} ${rest}`; }
+          else { sec = 'Unsure / Needs Review'; label = `${first} – ${rest}`; }
+          const k = dateKey(colDate[c]);
+          (data[sec][k] = data[sec][k] || []).push({ key: ln.toLowerCase(), key2: (fn || '').toLowerCase(), label });
+        }
+      }
+    });
+    dates.sort((a, b) => a - b);
+    const out = {};
+    SECTIONS.forEach(s => {
+      out[s] = dates.map(d => (data[s][dateKey(d)] || []).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : a.key2 < b.key2 ? -1 : a.key2 > b.key2 ? 1 : 0).map(x => x.label));
+    });
+    return { dates, sections: out };
+  }
+
+  /* ---------- write new sheet into the workbook ---------- */
+  const fmtDay = d => d.toLocaleDateString('en-US', { weekday: 'short' });
+  const fmtDate = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  async function makeWorkbook(files, result) {
+    const { dates, sections } = result;
+    // styles
+    let st = text(files.get('xl/styles.xml'));
+    const count = (tag) => +st.match(new RegExp(`<${tag} count="(\\d+)"`))[1];
+    const addTo = (tag, xml) => { const n = count(tag); st = st.replace(new RegExp(`<${tag} count="\\d+"`), `<${tag} count="${n + xml.length}"`).replace(`</${tag}>`, xml.join('') + `</${tag}>`); return n; };
+    const fontBase = addTo('fonts', [
+      '<font><sz val="14"/><b/><name val="Calibri"/></font>',
+      '<font><b/><sz val="11"/><name val="Calibri"/></font>',
+      '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font>',
+      '<font><i/><sz val="11"/><name val="Calibri"/></font>',
+      '<font><sz val="11"/><name val="Calibri"/></font>']);
+    const FT = fontBase, FB = fontBase + 1, FW = fontBase + 2, FI = fontBase + 3, FN = fontBase + 4;
+    const secColors = ['DDEBF7', 'BDD7EE', 'FFE699', 'C6E0B4', 'B4A7D6', 'F8CBAD'];
+    const fillBase = addTo('fills', ['1F3864', '7F7F7F', ...secColors].map(c => `<fill><patternFill patternType="solid"><fgColor rgb="FF${c}"/><bgColor indexed="64"/></patternFill></fill>`));
+    const bdr = addTo('borders', ['<border><left style="thin"><color rgb="FFBBBBBB"/></left><right style="thin"><color rgb="FFBBBBBB"/></right><top style="thin"><color rgb="FFBBBBBB"/></top><bottom style="thin"><color rgb="FFBBBBBB"/></bottom><diagonal/></border>']);
+    const xf = (font, fill, border, align) => `<xf numFmtId="0" fontId="${font}" fillId="${fill}" borderId="${border}" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment ${align}/></xf>`;
+    const xfs = [
+      xf(FT, 0, 0, ''),                                         // 0 title
+      xf(FW, fillBase, bdr, 'horizontal="center"'),             // 1 header navy
+      xf(FW, fillBase + 1, bdr, 'horizontal="center"'),         // 2 header weekend
+      xf(FN, 0, bdr, 'vertical="top" wrapText="1"'),            // 3 name cell
+      xf(FI, 0, 0, ''),                                         // 4 total label
+      xf(FI, 0, 0, 'horizontal="center"'),                      // 5 total number
+      ...secColors.map((_, i) => xf(FB, fillBase + 2 + i, bdr, ''))  // 6.. section bars
+    ];
+    const xfBase = addTo('cellXfs', xfs);
+    const S = i => xfBase + i;
+    files.set('xl/styles.xml', enc.encode(st));
+
+    // sheet xml
+    const rows = []; let r = 1;
+    const cell = (ref, v, s) => v === '' || v == null ? `<c r="${ref}" s="${s}"/>` : (typeof v === 'number' ? `<c r="${ref}" s="${s}"><v>${v}</v></c>` : `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`);
+    const lastCol = dates.length + 1;
+    rows.push(`<row r="1">${cell('A1', `Pharmacist Schedule – ${fmtDate(dates[0])} to ${fmtDate(dates[dates.length - 1])}, ${dates[dates.length - 1].getFullYear()}`, S(0))}</row>`);
+    let c2 = cell('A2', '', S(1)), c3 = cell('A3', 'Date', S(1));
+    dates.forEach((d, i) => { const st_ = S(d.getDay() === 0 || d.getDay() === 6 ? 2 : 1); c2 += cell(colName(i + 2) + '2', fmtDay(d), st_); c3 += cell(colName(i + 2) + '3', fmtDate(d), st_); });
+    rows.push(`<row r="2">${c2}</row>`, `<row r="3">${c3}</row>`);
+    r = 4;
+    SECTIONS.forEach((s, si) => {
+      const n = Math.max(0, ...sections[s].map(a => a.length));
+      let bar = cell(`A${r}`, s.toUpperCase(), S(6 + si)); for (let c = 2; c <= lastCol; c++) bar += cell(colName(c) + r, '', S(6 + si));
+      rows.push(`<row r="${r}">${bar}</row>`); r++;
+      for (let k = 0; k < n; k++) {
+        let x = cell(`A${r}`, '', S(3)); dates.forEach((_, i) => { x += cell(colName(i + 2) + r, sections[s][i][k] || '', S(3)); });
+        rows.push(`<row r="${r}">${x}</row>`); r++;
+      }
+      if (s === 'Day Shift') {
+        let x = cell(`A${r}`, 'Total', S(4)); dates.forEach((_, i) => { x += cell(colName(i + 2) + r, sections[s][i].length, S(5)); });
+        rows.push(`<row r="${r}">${x}</row>`); r++;
+      }
+      r++;
+    });
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${colName(lastCol)}${r - 1}"/><sheetViews><sheetView tabSelected="1" workbookViewId="0"><pane xSplit="1" ySplit="3" topLeftCell="B4" activePane="bottomRight" state="frozen"/><selection pane="bottomRight" activeCell="B4" sqref="B4"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="${lastCol}" width="17" customWidth="1"/></cols><sheetData>${rows.join('')}</sheetData></worksheet>`;
+
+    let n = 2; while (files.has(`xl/worksheets/sheet${n}.xml`)) n++;
+    files.set(`xl/worksheets/sheet${n}.xml`, enc.encode(sheetXml));
+
+    // content types, rels, workbook
+    let ct = text(files.get('[Content_Types].xml'));
+    ct = ct.replace('</Types>', `<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`);
+    files.set('[Content_Types].xml', enc.encode(ct));
+    let rels = text(files.get('xl/_rels/workbook.xml.rels'));
+    const ids = [...rels.matchAll(/Id="rId(\d+)"/g)].map(m => +m[1]); const rid = 'rId' + (Math.max(0, ...ids) + 1);
+    rels = rels.replace('</Relationships>', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${n}.xml"/></Relationships>`);
+    files.set('xl/_rels/workbook.xml.rels', enc.encode(rels));
+    let wb = text(files.get('xl/workbook.xml'));
+    const sids = [...wb.matchAll(/sheetId="(\d+)"/g)].map(m => +m[1]);
+    const sheetCount = (wb.match(/<sheet\b/g) || []).length;
+    wb = wb.replace('</sheets>', `<sheet name="Clean Schedule" sheetId="${Math.max(...sids) + 1}" r:id="${rid}"/></sheets>`);
+    wb = wb.replace(/<workbookView\b([^>]*?)\/>/, (m, a) => `<workbookView${a.replace(/\sactiveTab="\d+"/, '')} activeTab="${sheetCount}"/>`);
+    files.set('xl/workbook.xml', enc.encode(wb));
+    // un-select the original sheet(s)
+    for (const [name, d] of files) if (/^xl\/worksheets\/sheet\d+\.xml$/.test(name) && name !== `xl/worksheets/sheet${n}.xml`) {
+      files.set(name, enc.encode(text(d).replace(/\stabSelected="1"/, '')));
+    }
+    // app.xml sheet titles can go stale; drop it so Excel does not complain
+    return zip(files);
+  }
+
+  async function process(buf, cfg) {
+    const files = await unzip(buf);
+    const shared = readShared(files);
+    const sheet = readSheet(files, shared);
+    const result = build(sheet, cfg);
+    const blob = await makeWorkbook(files, result);
+    return { blob, result };
+  }
+  return { process, unzip, build, readSheet, readShared, DEFAULTS, SECTIONS };
+})();
+if (typeof module !== 'undefined') module.exports = Core;
+
+</script>
+<script>
+const $=id=>document.getElementById(id);
+$('reg').value=Core.DEFAULTS.registered.join('\n');
+$('ren').value=Object.entries(Core.DEFAULTS.renames).map(([a,b])=>a+' = '+b).join('\n');
+$('ign').value=Core.DEFAULTS.ignore.join('\n');
+let outBlob=null,outName='';
+const lines=t=>t.split('\n').map(s=>s.trim()).filter(Boolean);
+function cfg(){const renames={};lines($('ren').value).forEach(l=>{const i=l.indexOf('=');if(i>0)renames[l.slice(0,i).trim()]=l.slice(i+1).trim()});
+  return{registered:lines($('reg').value),renames,ignore:lines($('ign').value)}}
+async function handle(f){
+  const m=$('msg');m.className='';m.textContent='Processing…';$('actions').hidden=true;$('pcard').hidden=true;
+  try{
+    if(!/\.xlsx$/i.test(f.name))throw new Error('Please choose an .xlsx file.');
+    const {blob,result}=await Core.process(await f.arrayBuffer(),cfg());
+    outBlob=blob;outName=f.name.replace(/\.xlsx$/i,'')+' - Clean.xlsx';
+    const n=result.dates.length;
+    m.className='ok';m.textContent=`Done – ${n} days (${fmt(result.dates[0])} to ${fmt(result.dates[n-1])}). Review below, then download.`;
+    render(result);$('actions').hidden=false;$('pcard').hidden=false;
+  }catch(e){m.className='err';m.textContent=e.message||String(e);console.error(e)}
+}
+const fmt=d=>d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+const fills=['#DDEBF7','#BDD7EE','#FFE699','#C6E0B4','#B4A7D6','#F8CBAD'];
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function render({dates,sections}){
+  const we=d=>d.getDay()%6===0;
+  let h='<table><thead><tr><th></th>'+dates.map(d=>`<th class="${we(d)?'we':''}">${d.toLocaleDateString('en-US',{weekday:'short'})}</th>`).join('')+'</tr><tr><th>Date</th>'+dates.map(d=>`<th class="${we(d)?'we':''}">${fmt(d)}</th>`).join('')+'</tr></thead><tbody>';
+  Core.SECTIONS.forEach((s,si)=>{
+    const n=Math.max(0,...sections[s].map(a=>a.length));
+    h+=`<tr class="sec"><td style="background:${fills[si]}">${s.toUpperCase()}</td>${dates.map(()=>`<td style="background:${fills[si]}"></td>`).join('')}</tr>`;
+    for(let k=0;k<n;k++)h+='<tr><td style="background:#fff"></td>'+dates.map((_,i)=>`<td>${esc(sections[s][i][k]||'')}</td>`).join('')+'</tr>';
+    if(s==='Day Shift')h+='<tr class="tot"><td style="background:#fff;text-align:left">Total</td>'+dates.map((_,i)=>`<td>${sections[s][i].length}</td>`).join('')+'</tr>';
+  });
+  $('preview').innerHTML=h+'</tbody></table>';
+}
+const drop=$('drop'),inp=$('file');
+drop.onclick=()=>inp.click();drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' ')inp.click()};
+inp.onchange=()=>inp.files[0]&&handle(inp.files[0]);
+['dragenter','dragover'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];f&&handle(f)});
+$('again').onclick=()=>{inp.value='';inp.click()};
+$('dl').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(outBlob);a.download=outName;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),5000)};
+</script></body></html>
