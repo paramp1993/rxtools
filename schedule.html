@@ -147,7 +147,7 @@ const Core = (() => {
   const DEFAULTS = {
     registered: ['Zuhaib', 'Sanket', 'Safa', 'Param', 'Shirley', 'Michelle', 'Liat', 'Krista', 'Gemma', 'Namra', 'Negar', 'Vianna', 'Ara', 'Sakina', 'Louis', 'Seung Hee'],
     renames: { 'Maria': 'Grace', 'Seung': 'Seung Hee' },
-    ignore: ['PT TO Request'],
+    ignore: ['PT TO Request', 'PTO Request', 'LOA'],
   };
   const SECTIONS = ['Day Shift', 'Lead', 'Evening (1600-0000)', 'ASP (Antibiotic Stewardship)', 'Overnight (0000-0800)', 'Unsure / Needs Review'];
 
@@ -210,7 +210,18 @@ const Core = (() => {
           first = cfg.renames[first] || first;
           if (reg.has(first.toLowerCase())) first += ' ®';
           let sec, label;
+          const code = fn ? v.match(/^([A-Z]\d)\s+(\d{2,4})(?:\s+(.+))?$/) : null;   // new export format: shift code in the cell, name in column A
           if (onco) { sec = 'Unsure / Needs Review'; label = `${first} – ${v}`; }
+          else if (code) {
+            const cv = v.replace(/\s+/g, ' ');
+            if (cv === 'D8 08') { sec = /practice lead/i.test(job) ? 'Lead' : 'Day Shift'; label = first; }
+            else if (cv === 'D8 08 ASP') { sec = 'ASP (Antibiotic Stewardship)'; label = first; }
+            else if (cv === 'E8 16') { sec = 'Evening (1600-0000)'; label = first; }
+            else if (cv === 'E8 17' || cv === 'E8 1700') { sec = 'Evening (1600-0000)'; label = `${first} 1700-0000`; }
+            else if (cv === 'E4 16') { sec = 'Evening (1600-0000)'; label = `${first} 1600-2000`; }
+            else if (cv === 'N8 00 RE') { sec = 'Overnight (0000-0800)'; label = first; }
+            else { sec = 'Unsure / Needs Review'; label = `${first} – ${v}`; }
+          }
           else if (rest === '' && /practice lead/i.test(job)) { sec = 'Lead'; label = first; }
           else if (rest === '') { sec = 'Day Shift'; label = first; }
           else if (rest === '1600-0000') { sec = 'Evening (1600-0000)'; label = first; }
