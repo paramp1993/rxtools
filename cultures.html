@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Culture Summary</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385;
+    --border: #d9dde5; --accent: #2563eb; --accent-text: #ffffff; --ok: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --panel: #1d2129; --text: #e6e9ef; --muted: #9aa3b5;
+      --border: #333a47; --accent: #3b82f6; --accent-text: #ffffff; --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; display: flex; flex-direction: column; min-width: 0;
+  }
+  .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; gap: 8px; }
+  .head h2 { font-size: 14px; margin: 0; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  textarea, #out {
+    width: 100%; min-height: 420px; resize: vertical; border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, Consolas, monospace;
+  }
+  #out { white-space: pre-wrap; font: 15px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: auto; }
+  #out:empty::before { content: "Summary appears here."; color: var(--muted); }
+  button {
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    border-radius: 6px; padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  .btns { display: flex; gap: 6px; }
+  .copied { color: var(--ok); font-size: 13px; }
+  details.panel { margin-top: 16px; }
+  details summary { cursor: pointer; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 16px; margin: 12px 0; }
+  .opts label { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
+  .opt-note { color: var(--muted); font-size: 13px; margin: 12px 0 4px; }
+  #custom { min-height: 70px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Culture Summary</h1>
+  <p class="sub">Paste culture results from the chart. Gram stains are left out; which negative results are hidden is set under Options. Pasted results are not saved or sent anywhere.</p>
+  <div class="grid">
+    <section class="panel">
+      <div class="head">
+        <h2>Paste results</h2>
+        <div class="btns"><button id="clear">Clear</button></div>
+      </div>
+      <textarea id="in" spellcheck="false" placeholder="Paste culture results here…"></textarea>
+    </section>
+    <section class="panel">
+      <div class="head">
+        <h2>Summary</h2>
+        <div class="btns"><span id="msg" class="copied"></span><button id="copy" class="primary">Copy</button></div>
+      </div>
+      <div id="out"></div>
+    </section>
+  </div>
+  <details class="panel" id="options">
+    <summary>Options</summary>
+    <p class="opt-note">Hide these when negative (no growth / not detected):</p>
+    <div class="opts" id="cats"></div>
+    <p class="opt-note">Also hide when negative — one test or specimen name per line (e.g. "Sputum", "Catheter Tip"):</p>
+    <textarea id="custom" spellcheck="false" placeholder="e.g. Sputum"></textarea>
+    <div class="btns" style="margin-top:10px"><button id="reset">Reset to defaults</button></div>
+  </details>
+</main>
+<script>
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const RECORD_START = /^\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{3,4})\b/;
+const STATUS = /^(Preliminary result|Final result|In process|Edited result.*|Corrected result.*|Collected|In progress)\s*$/i;
+const QUANT = "(?:Scant|Rare|Few|Light|Moderate|Heavy|Many|Abundant|Profuse)";
+// Anything before "<>" (e.g. ">100 x 10e6 cfu/L") is dropped; only word quantities like "Scant" are kept
+const QTY_WORD = new RegExp("^(" + QUANT + ")\\s+Growth", "i");
+const ORG_LINE = new RegExp("^(?:(.*?)\\s*(?:<>|Growth of)\\s*)?([A-Z][a-z]+(?:\\s+(?:[a-z]+|sp\\.|spp\\.|species|complex|group\\s+[A-Z]))+|MRSA|VRE)(?:\\s+(ESBL|MRSA|VRE|CPE|CPO|AmpC))?\\s*$");
+
+// Short forms used in notes
+const ABBREV = [
+  [/^Staphylococcus epidermidis$/, "Staph epi"],
+  [/^Staphylococcus aureus$/, "Staph aureus"],
+  [/^Staphylococcus\b/, "Staph"],
+  [/^Streptococcus\b/, "Strep"],
+  [/^Escherichia coli$/, "E. coli"],
+  [/^Clostridi(?:oides|um) difficile$/, "C. diff"],
+  [/^Enterococcus\b/, "Enterococcus"],
+  [/^Pseudomonas aeruginosa$/, "Pseudomonas aeruginosa"],
+];
+
+function stripFlags(s) {
+  return s.replace(/\s+(Abnormal|Panic|Critical|High|Low)\b/g, "").replace(/\s+[PCF]\s*$/, "").trim();
+}
+
+function abbrev(org) {
+  for (const [re, rep] of ABBREV) if (re.test(org)) return org.replace(re, rep);
+  return org;
+}
+
+function parseRecords(text) {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const records = [];
+  let cur = null;
+  for (const raw of lines) {
+    const m = raw.match(RECORD_START);
+    if (m) {
+      cur = { day: +m[1], month: +m[2], year: +m[3], time: m[4], lines: [] };
+      records.push(cur);
+      continue;
+    }
+    if (cur) cur.lines.push(raw);
+  }
+  return records.map(parseRecord).filter(Boolean);
+}
+
+function parseRecord(r) {
+  const content = r.lines.map(l => l.replace(/\t/g, "    ").trimEnd());
+  const nonEmpty = content.map(l => l.trim()).filter(Boolean);
+  const test = (nonEmpty[0] || "").replace(/\[\d+\]/, "").trim();
+  let i = 1;
+  if (/^\(Abnormal\)$/i.test(nonEmpty[i] || "")) i++;
+  const specimen = nonEmpty[i] && !STATUS.test(nonEmpty[i]) ? nonEmpty[i] : "";
+  const status = (nonEmpty.find(l => STATUS.test(l)) || "").toLowerCase();
+
+  // Components: a line starting with a component name followed by a tab-separated value
+  const comps = {};
+  let curComp = null;
+  for (const raw of r.lines) {
+    const tabbed = raw.match(/^([A-Za-z][A-Za-z0-9 .\/-]*?)\t(.*)$/);
+    if (tabbed && tabbed[1] !== "Component") {
+      curComp = tabbed[1].trim();
+      comps[curComp] = [tabbed[2]];
+    } else if (curComp && raw.trim()) {
+      comps[curComp].push(raw);
+    }
+  }
+
+  const pending = /in process|in progress|collected/.test(status) || /No component results/i.test(r.lines.join("\n"));
+  return {
+    date: new Date(r.year, r.month - 1, r.day),
+    dateLabel: MONTHS[r.month - 1] + " " + r.day,
+    test, specimen, pending,
+    label: makeLabel(test, specimen),
+    isScreen: /screen/i.test(test),
+    result: pending ? { kind: "pending" } : interpret(comps, test),
+  };
+}
+
+function makeLabel(test, specimen) {
+  if (/difficile/i.test(test)) return "C. diff";
+  if (/screen/i.test(test)) {
+    const site = (test.split("-")[1] || specimen.split(" from ")[1] || "").trim().toLowerCase();
+    const what = test.split("-")[0].trim().replace(/\s*Screen$/i, "");
+    return what + " screen" + (site ? " (" + site + ")" : "");
+  }
+  if (/wound/i.test(test)) return "wound cx";
+  // "Blood, Hemodialysis Line", "Blood from CVC", "Urine from Bladder" → blood / urine
+  const main = specimen.match(/^(Blood|Urine|Sputum|CSF|Stool)\b/i);
+  if (main) {
+    let label = main[1].toLowerCase() + " cx";
+    // Line draws are kept apart from peripheral sets
+    if (/blood/i.test(main[1])) {
+      if (/hemodialysis|\bHD\b/i.test(specimen)) label += " IHD";
+      else if (/CVC|central|PICC|port/i.test(specimen)) label += " CVC";
+    }
+    return label;
+  }
+  let src = specimen;
+  if (/ from /i.test(src)) src = src.split(/ from /i)[1];
+  src = src.split(",")[0].trim().toLowerCase();
+  if (!src) src = test.replace(/^Culture,\s*/i, "").replace(/\(.*?\)|- Set #\d+/g, "").trim().toLowerCase();
+  if (/multiplex/i.test(test)) return "Multiplex";
+  if (!/culture/i.test(test) && test) return test.replace(/\(.*?\)|- Set #\d+/g, "").trim();
+  return src + " cx";
+}
+
+function interpret(comps, test) {
+  // C. diff: only reported when positive
+  if (/difficile/i.test(test)) {
+    const pos = Object.values(comps).some(v => {
+      const s = v.join(" ");
+      return /detected|positive/i.test(s) && !/not detected|negative/i.test(s);
+    });
+    return pos ? { kind: "other", text: "positive" } : { kind: "neg", text: "negative" };
+  }
+  // PCR panels: one component per target; report only what was detected
+  if (!Object.keys(comps).some(k => /culture/i.test(k)) && /pcr|multiplex|panel/i.test(test)) {
+    const hits = Object.entries(comps)
+      .filter(([, v]) => !/not detected|negative/i.test(v.join(" ")))
+      .map(([k]) => k);
+    return hits.length ? { kind: "orgs", orgs: hits.map(name => ({ qty: "", name: name + " detected" })) }
+                       : { kind: "neg", text: "negative" };
+  }
+  const key = Object.keys(comps).find(k => /culture/i.test(k)) || Object.keys(comps).find(k => !/gram/i.test(k));
+  if (!key) return { kind: "other", text: "no result" };
+  const lines = comps[key]
+    .map(l => stripFlags(l.trim()).replace(/Methicillin[- ]resistant Staphylococcus aureus/gi, "MRSA"))
+    .filter(Boolean);
+  const orgs = [];
+  for (const l of lines) {
+    const m = l.match(ORG_LINE);
+    if (!m || /^(no|mixed|normal|detected|see|refer|pending)\b/i.test(m[2])) continue;
+    const q = (m[1] || "").match(QTY_WORD);
+    orgs.push({ qty: q ? q[1].toLowerCase() : "", name: abbrev(m[2]) + (m[3] ? " " + m[3] : "") });
+  }
+  if (orgs.length) {
+    if (/screen/i.test(test)) return { kind: "other", text: "positive" };
+    return { kind: "orgs", orgs };
+  }
+  const first = (lines[0] || "").replace(/^.*?<>\s*/, "");
+  const noGrowth = first.match(/^no (significant )?growth/i);
+  if (noGrowth) return { kind: "neg", text: noGrowth[0].toLowerCase() };
+  if (/^no\b|not detected|negative/i.test(first)) return { kind: "neg", text: "negative" };
+  if (/mixed growth/i.test(first)) return { kind: "other", text: "mixed growth" };
+  if (/mixed flora/i.test(first)) return { kind: "other", text: "mixed flora" };
+  if (/see scanned result/i.test(first)) return { kind: "skip" };
+  if (/screen/i.test(test)) return { kind: "other", text: "positive" };
+  return { kind: "other", text: first.split(/[;.]/)[0].toLowerCase().replace(/\bmrsa\b/g, "MRSA") };
+}
+
+function orgText(orgs) {
+  const qtys = new Set(orgs.map(o => o.qty));
+  if (qtys.size === 1) {
+    const q = orgs[0].qty;
+    return (q ? q + " " : "") + orgs.map(o => o.name).join(", ");
+  }
+  return orgs.map(o => (o.qty ? o.qty + " " : "") + o.name).join(", ");
+}
+
+function resultText(res) {
+  return res.kind === "orgs" ? orgText(res.orgs) : res.text;
+}
+
+// Categories that can be hidden when negative; a record takes the first one that matches
+const CATEGORIES = [
+  { id: "mrsa", name: "MRSA screen", def: true, match: r => /mrsa/i.test(r.test) },
+  { id: "cpo", name: "CPO screen", def: true, match: r => /cpo|carbapenem/i.test(r.test) },
+  { id: "vre", name: "VRE screen", def: true, match: r => /\bvre\b|vancomycin/i.test(r.test) },
+  { id: "screen", name: "Other screens", def: true, match: r => r.isScreen },
+  { id: "cdiff", name: "C. diff", def: true, match: r => /difficile/i.test(r.test) },
+  { id: "multiplex", name: "Resp multiplex", def: false, match: r => /multiplex/i.test(r.test) },
+  { id: "blood", name: "Blood cx", def: false, match: r => /^blood/.test(r.label) },
+  { id: "urine", name: "Urine cx", def: false, match: r => /^urine/.test(r.label) },
+  { id: "other", name: "All other cultures", def: false, match: () => true },
+];
+const DEFAULTS = { hide: Object.fromEntries(CATEGORIES.map(c => [c.id, c.def])), custom: "" };
+
+function isHidden(r, opts) {
+  const cat = CATEGORIES.find(c => c.match(r));
+  if (opts.hide[cat.id]) return true;
+  const hay = (r.test + " " + r.specimen).toLowerCase();
+  return opts.custom.split("\n").map(s => s.trim().toLowerCase()).filter(Boolean).some(k => hay.includes(k));
+}
+
+function summarize(text, opts = DEFAULTS) {
+  const recs = parseRecords(text).filter(r => r.result.kind !== "skip");
+
+  // Group same-day cultures of the same type (e.g. blood cx sets)
+  const groups = new Map();
+  for (const r of recs) {
+    const k = r.date.getTime() + "|" + r.label;
+    if (!groups.has(k)) groups.set(k, { date: r.date, dateLabel: r.dateLabel, label: r.label, recs: [] });
+    groups.get(k).recs.push(r);
+  }
+
+  // Drop groups that are entirely negative when their category is set to hide
+  const shown = [...groups.values()].filter(g =>
+    !(g.recs.every(r => r.result.kind === "neg") && isHidden(g.recs[0], opts)));
+
+  const out = shown.sort((a, b) => a.date - b.date || a.label.localeCompare(b.label)).map(g => {
+    const n = g.recs.length;
+    const pending = g.recs.filter(r => r.result.kind === "pending").length;
+    const done = g.recs.filter(r => r.result.kind !== "pending");
+    let body;
+    if (pending === n) {
+      body = "pending";
+    } else {
+      // Count each organism (or non-negative result) across the sets
+      const counts = new Map();
+      const negs = [];
+      for (const r of done) {
+        if (r.result.kind === "neg") { negs.push(r.result.text); continue; }
+        const items = r.result.kind === "orgs"
+          ? r.result.orgs.map(o => (o.qty ? o.qty + " " : "") + o.name)
+          : [r.result.text];
+        for (const t of new Set(items)) counts.set(t, (counts.get(t) || 0) + 1);
+      }
+      if (n === 1) {
+        body = resultText(done[0].result);
+      } else if (!counts.size) {
+        body = negs[0];
+      } else {
+        body = [...counts].map(([t, c]) => c + "/" + n + " " + t).join(", ");
+      }
+      if (pending) body += " (" + pending + " pending)";
+    }
+    const sep = /\bcx\b/.test(g.label) && n === 1 && g.recs[0].result.kind === "orgs" ? ": " : " ";
+    return { key: g.date.getTime(), dateLabel: g.dateLabel, label: g.label, sep, body };
+  });
+
+  // Same-day blood cx from different sources with the same result → one line ("peripheral + CVC")
+  const merged = [];
+  for (const o of out) {
+    const src = o.label.match(/^blood cx(?: (CVC|IHD))?$/);
+    const prev = src && merged.find(m => m.sources && m.key === o.key && m.body === o.body && m.sep === o.sep);
+    if (prev) { prev.sources.push(src[1] || "peripheral"); continue; }
+    merged.push({ ...o, sources: src ? [src[1] || "peripheral"] : null });
+  }
+  return merged.map(m => {
+    // Name the source when other blood cx sources from the same day are on their own lines
+    const sameDay = m.sources && merged.some(o => o !== m && o.sources && o.key === m.key);
+    const label = m.sources && (m.sources.length > 1 || sameDay) ? "blood cx " + m.sources.join(" + ") : m.label;
+    return m.dateLabel + " " + label + m.sep + m.body;
+  }).join("\n");
+}
+
+const $in = document.getElementById("in");
+const $out = document.getElementById("out");
+const $msg = document.getElementById("msg");
+const $cats = document.getElementById("cats");
+const $custom = document.getElementById("custom");
+const STORE = "cultureSummaryOptions";
+
+// Options are remembered in this browser only
+function loadOpts() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE));
+    if (s) return { hide: { ...DEFAULTS.hide, ...s.hide }, custom: s.custom || "" };
+  } catch {}
+  return structuredClone(DEFAULTS);
+}
+let opts = loadOpts();
+function saveOpts() {
+  try { localStorage.setItem(STORE, JSON.stringify(opts)); } catch {}
+}
+function drawOpts() {
+  $cats.innerHTML = "";
+  for (const c of CATEGORIES) {
+    const lab = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = !!opts.hide[c.id];
+    box.onchange = () => { opts.hide[c.id] = box.checked; saveOpts(); render(); };
+    lab.append(box, c.name);
+    $cats.append(lab);
+  }
+  $custom.value = opts.custom;
+}
+$custom.addEventListener("input", () => { opts.custom = $custom.value; saveOpts(); render(); });
+document.getElementById("reset").onclick = () => { opts = structuredClone(DEFAULTS); saveOpts(); drawOpts(); render(); };
+
+const render = () => { $out.textContent = summarize($in.value, opts); };
+drawOpts();
+$in.addEventListener("input", render);
+document.getElementById("clear").onclick = () => { $in.value = ""; render(); $in.focus(); };
+document.getElementById("copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($out.textContent);
+  } catch {
+    const r = document.createRange(); r.selectNodeContents($out);
+    const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+    document.execCommand("copy"); s.removeAllRanges();
+  }
+  $msg.textContent = "Copied";
+  setTimeout(() => { $msg.textContent = ""; }, 1500);
+};
+if (typeof module !== "undefined") module.exports = { summarize };
+</script>
+</body>
+</html>
